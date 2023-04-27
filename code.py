@@ -1,4 +1,6 @@
 import supervisor
+import os
+import microcontroller
 import gc
 import time
 import board
@@ -11,16 +13,6 @@ from adafruit_minimqtt.adafruit_minimqtt import MMQTTException
 import digitalio
 import touchio
 
-# Add a secrets.py to your filesystem that has a dictionary called secrets with "ssid" and
-# "password" keys with your WiFi credentials. DO NOT share that file or commit it into Git or other
-# source control.
-# pylint: disable=no-name-in-module,wrong-import-order
-try:
-    from secrets import secrets
-except ImportError:
-    print("WiFi secrets are kept in secrets.py, please add them there!")
-    raise
-
 # Create a socket pool
 pool = socketpool.SocketPool(wifi.radio)
 
@@ -29,26 +21,11 @@ touch_A2 = touchio.TouchIn(board.A2)
 touch_A2.threshold = 30000
 is_touched = False
 
-def shutdown():
-    client.disconnect()
-
-
-def reset_on_error(delay, error):
-    print("Error:\n", str(error))
-    print("Resetting microcontroller in %d seconds" % delay)
-    time.sleep(delay)
-    microcontroller.reset()
-
-def reconnect():
-    print("Restarting...")
-    network_connect()
-    client.reconnect()
-
 def network_connect():
     try:
-        print("Connecting to %s" % secrets["ssid"])
-        wifi.radio.connect(secrets["ssid"], secrets["wifi_pw"])
-        print("Connected to %s!" % secrets["ssid"])
+        print("Connecting to %s" % os.getenv("ssid"))
+        wifi.radio.connect(os.getenv("ssid"), os.getenv("wifi_pw"))
+        print("Connected to %s!" % os.getenv("ssid"))
         print("My IP address is", wifi.radio.ipv4_address)
     except ConnectionError as e:
         reset_on_error(10, e)
@@ -65,20 +42,19 @@ def connected(client, userdata, flags, rc):
 def disconnected(client, userdata, rc):
     print("Disconnected from broker!")
 
-
 def mqtt_connect():
     global client
 
     # Set up a MiniMQTT Client
     client = MQTT.MQTT(
-        broker=secrets["broker"],
-        port=secrets["port"],
-        username=secrets["user"],
-        password=secrets["pw"],
-        client_id=secrets["client_id"],
+        broker=os.getenv("broker"),
+        port=os.getenv("port"),
+        username=os.getenv("user"),
+        password=os.getenv("pw"),
+        client_id=os.getenv("client_id"),
         socket_pool=pool,
         ssl_context=ssl.create_default_context(),
-        keep_alive=120,
+        keep_alive=60,
     )
 
     # Setup the callback methods above
@@ -90,8 +66,20 @@ def mqtt_connect():
     client.connect()
 
 
+def reset_on_error(delay, error):
+    print("Error:\n", str(error))
+    print("Resetting microcontroller in %d seconds" % delay)
+    time.sleep(delay)
+    microcontroller.reset()
+
+def reconnect():
+    print("Restarting...")
+    network_connect()
+    client.reconnect()
+
+
 last_ping = 0
-ping_interval = 120
+ping_interval = 30
 
 # start execution
 try:
@@ -100,13 +88,18 @@ try:
     print("Connecting MQTT")
     mqtt_connect()
 except KeyboardInterrupt:
-    shutdown()
+    sys.exit()
 except Exception:
-    shutdown()
     raise
 
 while True:
     try:
+        # check wifi is connected:
+        if wifi.radio.connected == False:
+            print("wifi disconnected")
+            reconnect()
+
+        #print("mem start loop:", gc.mem_free())
         if (time.time() - last_ping) > ping_interval:
             print("ping broker")
             client.ping()
